@@ -7,7 +7,7 @@ the same way on a real webcam, a video file or a list of test frames.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 import numpy as np
@@ -39,6 +39,11 @@ class VerifyResult:
     best_score: float = -1.0
     matched_frames: int = 0
     turn_range: float = 0.0
+    # On failure: the frame with the largest face that did NOT match (or the
+    # last frame if no face was seen), for the intruder photo.
+    evidence: np.ndarray | None = field(default=None, repr=False)
+    # Frames with a face close enough to check (0 = nobody was there).
+    faces_seen: int = 0
 
     @property
     def exit_code(self) -> int:
@@ -61,9 +66,14 @@ def verify(
     matched = 0
     bad_reads = 0
     turn = TurnChallenge(cfg.liveness_min_range)
+    evidence: Frame | None = None
+    evidence_width = -1
+    faces_seen = 0
+    last_frame: Frame | None = None
 
     def result(ok: bool, reason: str) -> VerifyResult:
-        return VerifyResult(ok, reason, best, matched, turn.range)
+        shot = None if ok else (evidence if evidence is not None else last_frame)
+        return VerifyResult(ok, reason, best, matched, turn.range, shot, faces_seen)
 
     while clock() - start < cfg.timeout:
         frame = read()
@@ -73,6 +83,7 @@ def verify(
                 return result(False, "camera")
             continue
         bad_reads = 0
+        last_frame = frame
 
         faces = engine.detect(frame)
         face = faces[0] if faces else None
@@ -81,6 +92,7 @@ def verify(
         elif face.width < cfg.min_face_px:
             status = "Come a little closer"
         else:
+            faces_seen += 1
             score = match_score(engine.embed(frame, face), templates)
             best = max(best, score)
             if score >= cfg.threshold:
@@ -88,6 +100,8 @@ def verify(
                 # Only frames that already match feed the turn check, so the
                 # head that turns has to be the enrolled one.
                 turn.feed(face.landmarks)
+            elif face.width > evidence_width:
+                evidence, evidence_width = frame, face.width
             if matched >= cfg.frames_required and (not cfg.liveness or turn.passed):
                 return result(True, "match")
             if matched and cfg.liveness and not turn.passed:

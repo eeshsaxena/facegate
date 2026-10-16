@@ -100,3 +100,32 @@ def test_enroll_refuses_two_faces_in_view():
 def test_enroll_refuses_mixed_people():
     with pytest.raises(EnrollError, match="one person"):
         enroll(lambda: BLANK, ScriptedEngine([stranger(i) for i in range(20)]), samples=6, gap=0.0, clock=FakeClock())
+
+
+def frame_no(i):
+    f = np.zeros((4, 4, 3), np.uint8)
+    f[0, 0, 0] = i
+    return f
+
+
+def run_frames(script, cfg=None):
+    frames = iter(frame_no(i) for i in range(10_000))
+    return verify(lambda: next(frames), ScriptedEngine(script), TEMPLATES, cfg or MatchConfig(), clock=FakeClock())
+
+
+def test_failure_keeps_the_frame_with_the_biggest_strangers_face():
+    script = [stranger(0), ([make_face(200)], unit(900)), stranger(1)] + [([], None)] * 200
+    res = run_frames(script)
+    assert not res.ok and res.evidence is not None
+    assert res.evidence[0, 0, 0] == 1  # the second frame had the 200-px face
+    assert res.faces_seen == 3
+
+
+def test_failure_with_nobody_keeps_the_last_frame():
+    res = run_frames([([], None)] * 500)
+    assert res.faces_seen == 0 and res.evidence is not None
+
+
+def test_success_keeps_no_photo():
+    res = run_frames([mine(0, -0.1), mine(1, 0.0), mine(2, 0.1)])
+    assert res.ok and res.evidence is None
