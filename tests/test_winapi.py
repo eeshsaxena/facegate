@@ -60,3 +60,8 @@ def test_mutex_exists():
     assert winapi.mutex_exists(name)
     winapi.kernel32.CloseHandle(h)
     assert not winapi.mutex_exists(name)
+
+
+def test_is_app_window_on_real_windows():
+    for h in winapi.top_level_windows()[:30]:
+        assert isinstance(winapi.is_app_window(h), bool)

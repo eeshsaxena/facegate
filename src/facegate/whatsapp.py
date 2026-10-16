@@ -33,12 +33,13 @@ class WindowApi(Protocol):
     def top_windows(self) -> list[int]: ...
     def process_name(self, hwnd: int) -> str: ...
     def title(self, hwnd: int) -> str: ...
-    def is_visible(self, hwnd: int) -> bool: ...
+    def is_app_window(self, hwnd: int) -> bool: ...
+    def is_window(self, hwnd: int) -> bool: ...
     def is_minimized(self, hwnd: int) -> bool: ...
-    def owner(self, hwnd: int) -> int: ...
     def minimize(self, hwnd: int) -> None: ...
     def restore(self, hwnd: int) -> None: ...
     def session_locked(self) -> bool: ...
+    def describe(self, hwnd: int) -> str: ...
 
 
 class Win32Windows:
@@ -74,14 +75,19 @@ class Win32Windows:
     def title(self, hwnd: int) -> str:
         return self._w.window_title(hwnd)
 
-    def is_visible(self, hwnd: int) -> bool:
-        return self._w.is_visible(hwnd)
+    def is_app_window(self, hwnd: int) -> bool:
+        return self._w.is_app_window(hwnd)
+
+    def is_window(self, hwnd: int) -> bool:
+        return self._w.is_window(hwnd)
 
     def is_minimized(self, hwnd: int) -> bool:
         return self._w.is_minimized(hwnd)
 
-    def owner(self, hwnd: int) -> int:
-        return self._w.owner(hwnd)
+    def describe(self, hwnd: int) -> str:
+        w = self._w
+        return (f"{hwnd} {w.window_title(hwnd)!r} visible={w.is_visible(hwnd)} "
+                f"minimized={w.is_minimized(hwnd)} app={w.is_app_window(hwnd)}")
 
     def minimize(self, hwnd: int) -> None:
         self._w.minimize(hwnd)
@@ -101,14 +107,21 @@ class WhatsAppGuard:
         verify: Callable[[], str],
         clock: Callable[[], float] = time.monotonic,
         notify: Callable[[str], None] = lambda _msg: None,
+        sleep: Callable[[float], None] = time.sleep,
+        on_unlocked: Callable[[], None] = lambda: None,
     ):
         """``verify`` returns MATCH, NO_MATCH, CANCELLED or CAMERA;
-        ``notify`` shows a short message (used during the cooldown)."""
+        ``notify`` shows a short message (used during the cooldown);
+        ``on_unlocked`` runs once WhatsApp is back (closes the camera window)."""
         self.cfg = cfg
         self.api = api
         self.verify = verify
         self.clock = clock
         self.notify = notify
+        self.sleep = sleep
+        self.on_unlocked = on_unlocked
+        # Windows we minimised while locked, in order; all come back on unlock.
+        self.hidden: dict[int, None] = {}
         self.locked = True
         # After a check we wait for WhatsApp to leave the front before asking
         # again, so the camera never loops on its own.
@@ -129,18 +142,41 @@ class WhatsAppGuard:
             return any(t in title for t in self._titles)
         return False
 
-    def sweep(self) -> int:
-        """Minimise every visible WhatsApp window; return how many."""
-        hidden = 0
+    def is_whatsapp_app_window(self, hwnd: int) -> bool:
+        # Tray menus, notification toasts and dialogs don't count: only a real
+        # WhatsApp window (the one with the chats) triggers a check.
+        return bool(hwnd) and self.api.is_app_window(hwnd) and self.is_whatsapp(hwnd)
+
+    def hide(self, hwnd: int) -> None:
+        self.api.minimize(hwnd)
+        self.hidden[hwnd] = None
+
+    def sweep(self) -> list[int]:
+        """Minimise every visible WhatsApp window; return the ones it hid."""
+        found = []
         for hwnd in self.api.top_windows():
-            if not self.api.is_visible(hwnd) or self.api.is_minimized(hwnd):
+            if self.api.is_minimized(hwnd) or not self.is_whatsapp_app_window(hwnd):
                 continue
-            # Owned windows (dialogs, pop-ups) follow their owner.
-            if self.api.owner(hwnd) or not self.is_whatsapp(hwnd):
-                continue
-            self.api.minimize(hwnd)
-            hidden += 1
-        return hidden
+            self.hide(hwnd)
+            found.append(hwnd)
+        return found
+
+    def bring_back(self, main: int) -> None:
+        """Restore every window we hid, the one you opened last (on top),
+        and make sure it really came back."""
+        windows = [h for h in self.hidden if h != main and self.api.is_window(h)]
+        windows.append(main)
+        self.hidden.clear()
+        for hwnd in windows:
+            for attempt in range(4):
+                self.api.restore(hwnd)
+                self.sleep(0.15)
+                if self.api.is_app_window(hwnd) and not self.api.is_minimized(hwnd):
+                    break
+                log.debug("restore attempt %d did not stick: %s", attempt + 1, self.api.describe(hwnd))
+            else:
+                log.warning("could not bring WhatsApp back: %s", self.api.describe(hwnd))
+            log.debug("restored %s", self.api.describe(hwnd))
 
     def lock(self) -> None:
         if not self.locked:
@@ -155,7 +191,7 @@ class WhatsAppGuard:
             return
 
         fg = self.api.foreground()
-        hit = fg if self.is_whatsapp(fg) else 0
+        hit = fg if self.is_whatsapp_app_window(fg) else 0
         now = self.clock()
 
         if not self.locked:
@@ -165,12 +201,18 @@ class WhatsAppGuard:
                 self.lock()
             return
 
+        # WhatsApp counts as "opened" when one of its windows is in front OR
+        # simply on screen: Windows doesn't always activate a window that
+        # opens from the tray or the Start menu.
         if hit:
-            self.api.minimize(hit)
-        self.sweep()
-        if not hit:
+            self.hide(hit)
+        shown = self.sweep()
+        opened = hit or (shown[0] if shown else 0)
+        if not opened:
             self.armed = True
             return
+        log.debug("WhatsApp on screen while locked: %s", self.api.describe(opened))
+        hit = opened
         if not self.armed:
             return
         self.armed = False
@@ -187,8 +229,9 @@ class WhatsAppGuard:
             self.failures = 0
             self.armed = True  # ready to ask again after the next relock
             self.locked = False
+            self.bring_back(hit)
             self.last_active = self.clock()
-            self.api.restore(hit)
+            self.on_unlocked()
             return
 
         self.sweep()  # in case it was clicked again during the check

@@ -71,6 +71,7 @@ class FaceChecker:
         self.show_preview = show_preview
         self.camera = Camera(cfg.camera_index)
         self.lock = threading.RLock()
+        self._kept_preview = None
 
     def _preview(self, title: str):
         if not self.show_preview:
@@ -121,12 +122,21 @@ class FaceChecker:
                 log.info("verify: %s (best %.3f, turn %.2f)", res.reason, res.best_score, res.turn_range)
                 if not res.ok and res.reason == "timeout" and preview is not None:
                     preview.message("Face not recognised", 1.2)
+                if res.ok and preview is not None:
+                    # Keep our window (and with it the right to change the
+                    # foreground) until WhatsApp is back in front.
+                    self._kept_preview, preview = preview, None
                 return res.reason
             finally:
                 if preview is not None:
                     preview.close()
                 if not self.cfg.presence.enabled:
                     self.camera.close()
+
+    def close_preview(self) -> None:
+        if self._kept_preview is not None:
+            self._kept_preview.close()
+            self._kept_preview = None
 
     def someone_there(self) -> bool | None:
         with self.lock:
@@ -162,7 +172,8 @@ def run(cfg: Config, show_preview: bool = True) -> int:
     wake = threading.Event()
     guards: list[tuple[object, float, bool]] = []  # (guard, interval, wakes on window events)
     if cfg.whatsapp.enabled:
-        wa = WhatsAppGuard(cfg.whatsapp, Win32Windows(), lambda: "", notify=checker.notify)
+        wa = WhatsAppGuard(cfg.whatsapp, Win32Windows(), lambda: "", notify=checker.notify,
+                           on_unlocked=checker.close_preview)
         wa.verify = lambda: checker.check(keep_hidden=wa.sweep)
         guards.append((wa, cfg.whatsapp.poll_interval, True))
     if cfg.presence.enabled:

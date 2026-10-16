@@ -42,6 +42,8 @@ user32.EnumWindows.argtypes = [EnumProc, wintypes.LPARAM]
 user32.IsWindowVisible.argtypes = [HWND]
 user32.GetWindow.argtypes = [HWND, ctypes.c_uint]
 user32.GetWindow.restype = HWND
+user32.GetWindowLongW.argtypes = [HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
 user32.BringWindowToTop.argtypes = [HWND]
 user32.AttachThreadInput.argtypes = [DWORD, DWORD, BOOL]
 WinEventProc = ctypes.WINFUNCTYPE(
@@ -181,6 +183,15 @@ def owner(hwnd: int) -> int:
     return user32.GetWindow(hwnd, GW_OWNER) or 0
 
 
+def is_app_window(hwnd: int) -> bool:
+    """A real top-level app window: visible, not owned, not a tool window
+    (tray menus, tooltips and notification pop-ups are tool windows)."""
+    GWL_EXSTYLE, WS_EX_TOOLWINDOW = -20, 0x00000080
+    if not user32.IsWindowVisible(hwnd) or owner(hwnd):
+        return False
+    return not (user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+
+
 def is_window(hwnd: int) -> bool:
     return bool(hwnd) and bool(user32.IsWindow(hwnd))
 
@@ -194,11 +205,14 @@ def minimize(hwnd: int) -> None:
 
 
 def restore(hwnd: int) -> None:
-    """Un-minimise and bring to the front, even from a background process.
+    """Show, un-minimise and bring to the front, even from a background
+    process.  Works for windows that were hidden to the tray too.
 
     Windows only lets the process that owns the foreground change it, so if
     the plain call is refused we briefly share input with whoever owns it.
     """
+    if not user32.IsWindowVisible(hwnd):
+        user32.ShowWindow(hwnd, SW_SHOW)
     user32.ShowWindow(hwnd, SW_RESTORE)
     if user32.SetForegroundWindow(hwnd):
         return
