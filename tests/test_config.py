@@ -38,3 +38,12 @@ def test_bad_settings_are_rejected(text):
 
 def test_missing_file_gives_defaults(tmp_path):
     assert load_config(tmp_path / "nope.toml") == Config()
+
+
+def test_on_fail_values():
+    assert parse_config("").whatsapp.on_fail == "close"
+    assert parse_config('[whatsapp]\non_fail = "minimize"\n').whatsapp.on_fail == "minimize"
+    with pytest.raises(ValueError):
+        parse_config('[whatsapp]\non_fail = "explode"\n')
+    with pytest.raises(ValueError):
+        parse_config("[whatsapp]\non_fail = 1\n")

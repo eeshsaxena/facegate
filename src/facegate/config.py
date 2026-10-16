@@ -51,6 +51,20 @@ class WhatsAppConfig:
     # Keep the webcam open this long after a check so the next one is instant
     # (0 = turn it off right away; the camera light stays on meanwhile).
     camera_keep_open: float = 15.0
+    # What to do when the face doesn't match (or the check is cancelled):
+    # "close" force-quits WhatsApp, "minimize" just keeps it hidden.
+    on_fail: str = "close"
+    # While WhatsApp is open, quietly re-check the face this often (seconds,
+    # 0 = off).  No camera window, no head turn.
+    recheck_interval: float = 60.0
+    # If nobody is in front of the camera, WhatsApp stays open and the
+    # re-check repeats this often until someone is.
+    recheck_absent_interval: float = 10.0
+    # How long one background re-check may look.
+    recheck_timeout: float = 6.0
+    # Save a photo of whoever fails the check (kept on this laptop only).
+    save_intruder_photos: bool = True
+    intruder_photos_keep: int = 100
     # After this many faces that didn't match in a row, stop asking for a while.
     max_failures: int = 3
     cooldown: float = 30.0
@@ -95,6 +109,9 @@ def _merge(obj, data: dict, where: str = "") -> None:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{where}{key} must be a number")
             value = type(current)(value)
+        elif isinstance(current, str):
+            if not isinstance(value, str):
+                raise ValueError(f"{where}{key} must be text")
         elif isinstance(current, list):
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise ValueError(f"{where}{key} must be a list of strings")
@@ -104,6 +121,8 @@ def _merge(obj, data: dict, where: str = "") -> None:
 def parse_config(text: str) -> Config:
     cfg = Config()
     _merge(cfg, tomllib.loads(text))
+    if cfg.whatsapp.on_fail not in ("close", "minimize"):
+        raise ValueError('whatsapp.on_fail must be "close" or "minimize"')
     return cfg
 
 
@@ -132,6 +151,12 @@ window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
 relock_after = 1.0        # seconds out of focus before it locks again
 focus_grace = 10.0
 camera_keep_open = 15.0   # keep the webcam warm for quick re-checks (0 = off)
+on_fail = "close"         # wrong face: "close" quits WhatsApp, "minimize" hides it
+recheck_interval = 60.0   # quiet face re-check while WhatsApp is open (0 = off)
+recheck_absent_interval = 10.0   # nobody there: stay open, re-check this often
+recheck_timeout = 6.0
+save_intruder_photos = true   # photo of whoever fails the check (local only)
+intruder_photos_keep = 100
 max_failures = 3          # wrong faces in a row before a cooldown
 cooldown = 30.0
 

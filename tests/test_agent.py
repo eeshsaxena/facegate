@@ -124,6 +124,9 @@ class FakeCamera:
         self.is_open = False
         self.closed += 1
 
+    def read(self):
+        return None
+
 
 def checker(**whatsapp):
     from facegate.config import Config
@@ -150,3 +153,29 @@ def test_camera_is_left_alone_for_the_walk_away_lock():
     c.cfg.presence.enabled = True
     c.release_if_idle(1e9)
     assert c.camera.is_open
+
+
+def test_recheck_maps_results(monkeypatch, tmp_path):
+    import numpy as np
+
+    from facegate import intruders
+    from facegate.verify import VerifyResult
+    from facegate.whatsapp import ABSENT, CAMERA, MATCH, STRANGER
+
+    saved = []
+    monkeypatch.setattr(intruders, "save", lambda frame, **kw: saved.append(kw["reason"]) or tmp_path / "x.jpg")
+    c = checker()
+    c.camera.flush = lambda: None
+    shot = np.zeros((2, 2, 3), np.uint8)
+    cases = [
+        (VerifyResult(True, "match", 0.8, 2), MATCH),
+        (VerifyResult(False, "timeout", -1.0, faces_seen=0, evidence=shot), ABSENT),
+        (VerifyResult(False, "timeout", 0.1, faces_seen=12, evidence=shot), STRANGER),
+        (VerifyResult(False, "camera"), CAMERA),
+    ]
+    seen_cfg = []
+    for result, expected in cases:
+        monkeypatch.setattr(agent, "verify", lambda read, eng, tpl, cfg, r=result: seen_cfg.append(cfg) or r)
+        assert c.recheck() == expected
+    assert saved == ["stranger-recheck"]  # only the stranger is photographed
+    assert all(not cfg.liveness and cfg.timeout == 6.0 for cfg in seen_cfg)

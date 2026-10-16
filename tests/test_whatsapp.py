@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from facegate.config import WhatsAppConfig
-from facegate.whatsapp import CAMERA, CANCELLED, MATCH, NO_MATCH, WhatsAppGuard
+from facegate.whatsapp import ABSENT, CAMERA, CANCELLED, MATCH, NO_MATCH, STRANGER, WhatsAppGuard
 
 WA, WA2, WA_POPUP, WA_HIDDEN, WA_TRAY, CHROME, CODE = 101, 102, 103, 104, 105, 202, 303
 
@@ -70,6 +70,21 @@ class FakeWindows:
         self.wins[h].visible = True
         self.fg = h
 
+    def close_app(self, names):
+        lowered = {n.lower() for n in names}
+        gone = [h for h, w in self.wins.items() if w.name.lower() in lowered]
+        for h in gone:
+            del self.wins[h]
+            if self.fg == h:
+                self.fg = 0
+        self.calls.append(("close", tuple(names)))
+        return 1 if gone else 0
+
+    def relaunch(self):
+        """Start WhatsApp again after it was closed."""
+        self.wins[WA] = Win("WhatsApp.Root.exe", "WhatsApp")
+        self.fg = WA
+
     def bring_up(self, h):
         """What clicking the taskbar button or tray icon does."""
         self.wins[h].minimized = False
@@ -90,6 +105,9 @@ class Clock:
 
 
 def guard(results, **cfg):
+    # Most tests check the window logic, so they keep WhatsApp running on a
+    # failed check; the on_fail="close" tests below opt in.
+    cfg.setdefault("on_fail", "minimize")
     api, clock, answers = FakeWindows(), Clock(), list(results)
     asked, notes = [], []
 
@@ -401,3 +419,150 @@ def test_minimising_whatsapp_yourself_locks_it():
     api.bring_up(WA)
     g.tick()
     assert len(asked) == 2
+
+
+# --- on_fail = "close" -------------------------------------------------------
+
+def test_wrong_face_closes_whatsapp():
+    g, api, clock, asked, _ = guard([NO_MATCH], on_fail="close")
+    api.bring_up(WA)
+    g.tick()
+    assert ("close", ("WhatsApp.exe", "WhatsApp.Root.exe")) in api.calls
+    assert WA not in api.wins and g.locked
+
+
+def test_esc_on_the_camera_window_closes_it_too():
+    g, api, _, _, _ = guard([CANCELLED], on_fail="close")
+    api.bring_up(WA)
+    g.tick()
+    assert WA not in api.wins
+
+
+def test_camera_trouble_does_not_close_whatsapp():
+    g, api, _, _, _ = guard([CAMERA], on_fail="close")
+    api.bring_up(WA)
+    g.tick()
+    assert WA in api.wins and not visible(api, WA)
+    assert not any(c[0] == "close" for c in api.calls)
+
+
+def test_after_closing_reopening_asks_again():
+    g, api, clock, asked, _ = guard([NO_MATCH, MATCH], on_fail="close")
+    api.bring_up(WA)
+    g.tick()
+    g.tick()
+    api.relaunch()
+    g.tick()
+    assert len(asked) == 2 and visible(api, WA) and not g.locked
+
+
+def test_opening_during_cooldown_closes_it_without_a_check():
+    g, api, clock, asked, notes = guard([NO_MATCH] * 3, on_fail="close", max_failures=3, cooldown=30)
+    for t in range(3):
+        clock.t = t
+        api.relaunch()
+        g.tick()
+        g.tick()
+    clock.t = 5
+    api.relaunch()
+    g.tick()
+    assert len(asked) == 3 and WA not in api.wins and notes
+
+
+def test_browser_matched_by_title_is_never_closed():
+    g, api, _, _, _ = guard([NO_MATCH], on_fail="close", window_titles=["WhatsApp"])
+    api.bring_up(CHROME)
+    g.tick()
+    assert CHROME in api.wins and not visible(api, CHROME)
+
+
+# --- quiet background re-check ----------------------------------------------
+
+def guard_with_recheck(recheck_results, verify_results=(), **cfg):
+    g, api, clock, asked, notes = guard(list(verify_results), **cfg)
+    rechecks = list(recheck_results)
+    done = []
+
+    def recheck():
+        done.append(clock.t)
+        return rechecks.pop(0)
+
+    g.recheck = recheck
+    return g, api, clock, asked, done
+
+
+def unlocked(g, api, clock):
+    api.bring_up(WA)
+    g.tick()
+    assert not g.locked
+
+
+def test_recheck_every_minute_while_you_are_there():
+    g, api, clock, asked, done = guard_with_recheck([MATCH, MATCH], [MATCH])
+    unlocked(g, api, clock)
+    for t in (30, 59):
+        clock.t = t
+        g.tick()
+    assert done == []
+    clock.t = 60
+    g.tick()
+    clock.t = 100
+    g.tick()
+    clock.t = 120
+    g.tick()
+    assert done == [60, 120] and not g.locked
+
+
+def test_nobody_there_keeps_whatsapp_open_and_rechecks_every_10_s():
+    g, api, clock, asked, done = guard_with_recheck([ABSENT, ABSENT, ABSENT, MATCH, MATCH], [MATCH], on_fail="close")
+    unlocked(g, api, clock)
+    for t in (60, 65, 70, 80, 90, 120, 150):
+        clock.t = t
+        g.tick()
+    assert done == [60, 70, 80, 90, 150]
+    assert not g.locked and visible(api, WA) and WA in api.wins
+    assert not any(c[0] == "close" for c in api.calls)
+
+
+def test_stranger_at_the_recheck_hides_whatsapp_and_asks_for_a_face():
+    g, api, clock, asked, done = guard_with_recheck([STRANGER], [MATCH, NO_MATCH], on_fail="close")
+    unlocked(g, api, clock)
+    clock.t = 60
+    g.tick()
+    assert done == [60] and len(asked) == 2  # the visible check ran
+    assert WA not in api.wins and g.locked  # and failed: closed
+
+
+def test_stranger_alarm_but_it_was_you_after_all():
+    g, api, clock, asked, done = guard_with_recheck([STRANGER], [MATCH, MATCH])
+    unlocked(g, api, clock)
+    clock.t = 60
+    g.tick()
+    assert len(asked) == 2 and not g.locked and visible(api, WA)
+
+
+def test_camera_trouble_at_recheck_is_retried_soon_and_never_closes():
+    g, api, clock, asked, done = guard_with_recheck([CAMERA, MATCH], [MATCH], on_fail="close")
+    unlocked(g, api, clock)
+    clock.t = 60
+    g.tick()
+    clock.t = 70
+    g.tick()
+    assert done == [60, 70] and WA in api.wins and not g.locked
+
+
+def test_recheck_can_be_turned_off():
+    g, api, clock, asked, done = guard_with_recheck([], [MATCH], recheck_interval=0)
+    unlocked(g, api, clock)
+    clock.t = 10_000
+    g.tick()
+    assert done == []
+
+
+def test_no_recheck_while_whatsapp_is_in_the_background():
+    g, api, clock, asked, done = guard_with_recheck([], [MATCH], relock_after=1000)
+    unlocked(g, api, clock)
+    api.fg = CODE
+    clock.t = 200
+    g.tick()
+    assert done == []

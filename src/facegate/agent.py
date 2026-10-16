@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -24,7 +25,7 @@ from facegate.engine import FaceEngine, match_score
 from facegate.models import ensure_models
 from facegate.presence import PresenceGuard
 from facegate.verify import verify
-from facegate.whatsapp import CAMERA, WhatsAppGuard, Win32Windows
+from facegate.whatsapp import ABSENT, CAMERA, MATCH, STRANGER, WhatsAppGuard, Win32Windows
 
 log = logging.getLogger("facegate.agent")
 
@@ -122,8 +123,12 @@ class FaceChecker:
 
                 res = verify(self.camera.read, self.engine, self.templates, self.cfg.match, on_frame=on_frame)
                 log.info("verify: %s (best %.3f, turn %.2f)", res.reason, res.best_score, res.turn_range)
+                if res.reason in ("timeout", "cancelled"):
+                    tag = "cancelled" if res.reason == "cancelled" else ("stranger" if res.faces_seen else "noface")
+                    self.save_intruder(res.evidence, tag)
                 if not res.ok and res.reason == "timeout" and preview is not None:
-                    preview.message("Face not recognised", 1.2)
+                    text = "Face not recognised. Closing WhatsApp." if self.cfg.whatsapp.on_fail == "close"                         else "Face not recognised"
+                    preview.message(text, 1.2)
                 if res.ok and preview is not None:
                     # Keep our window (and with it the right to change the
                     # foreground) until WhatsApp is back in front.
@@ -143,6 +148,42 @@ class FaceChecker:
         if now - self.last_used >= self.cfg.whatsapp.camera_keep_open:
             with self.lock:
                 self.camera.close()
+
+    def save_intruder(self, frame, reason: str) -> None:
+        if frame is None or not self.cfg.whatsapp.save_intruder_photos:
+            return
+        from facegate import intruders
+
+        try:
+            path = intruders.save(frame, keep=self.cfg.whatsapp.intruder_photos_keep, reason=reason)
+            log.info("saved a photo of the failed attempt: %s", path)
+        except Exception:
+            log.exception("could not save the intruder photo")
+
+    def recheck(self) -> str:
+        """Quiet background check: no window, no head turn.
+
+        Returns MATCH, ABSENT (no face in view), STRANGER (a face that isn't
+        yours) or CAMERA.
+        """
+        wa = self.cfg.whatsapp
+        quick = replace(self.cfg.match, liveness=False, timeout=wa.recheck_timeout, frames_required=2)
+        with self.lock:
+            try:
+                if not self.open_camera():
+                    return CAMERA
+                res = verify(self.camera.read, self.engine, self.templates, quick)
+            finally:
+                self.last_used = time.monotonic()
+        log.debug("re-check: %s (best %.3f, faces %d)", res.reason, res.best_score, res.faces_seen)
+        if res.ok:
+            return MATCH
+        if res.reason == "camera":
+            return CAMERA
+        if res.faces_seen == 0:
+            return ABSENT
+        self.save_intruder(res.evidence, "stranger-recheck")
+        return STRANGER
 
     def close_preview(self) -> None:
         if self._kept_preview is not None:
@@ -184,7 +225,7 @@ def run(cfg: Config, show_preview: bool = True) -> int:
     guards: list[tuple[object, float, bool]] = []  # (guard, interval, wakes on window events)
     if cfg.whatsapp.enabled:
         wa = WhatsAppGuard(cfg.whatsapp, Win32Windows(), lambda: "", notify=checker.notify,
-                           on_unlocked=checker.close_preview)
+                           on_unlocked=checker.close_preview, recheck=checker.recheck)
         wa.verify = lambda: checker.check(keep_hidden=wa.sweep)
         guards.append((wa, cfg.whatsapp.poll_interval, True))
     if cfg.presence.enabled:

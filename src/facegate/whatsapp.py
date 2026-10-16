@@ -28,6 +28,8 @@ log = logging.getLogger("facegate.whatsapp")
 
 # What a face check can come back with (see verify.VerifyResult.reason).
 MATCH, NO_MATCH, CANCELLED, CAMERA = "match", "timeout", "cancelled", "camera"
+# Extra outcomes of the quiet background re-check.
+ABSENT, STRANGER = "absent", "stranger"
 
 
 class WindowApi(Protocol):
@@ -42,6 +44,7 @@ class WindowApi(Protocol):
     def restore(self, hwnd: int) -> None: ...
     def session_locked(self) -> bool: ...
     def describe(self, hwnd: int) -> str: ...
+    def close_app(self, process_names: list[str]) -> int: ...
 
 
 class Win32Windows:
@@ -86,6 +89,9 @@ class Win32Windows:
     def is_minimized(self, hwnd: int) -> bool:
         return self._w.is_minimized(hwnd)
 
+    def close_app(self, process_names: list[str]) -> int:
+        return sum(self._w.terminate(pid) for pid in self._w.find_processes(process_names))
+
     def describe(self, hwnd: int) -> str:
         w = self._w
         return (f"{hwnd} {w.window_title(hwnd)!r} visible={w.is_visible(hwnd)} "
@@ -111,10 +117,13 @@ class WhatsAppGuard:
         notify: Callable[[str], None] = lambda _msg: None,
         sleep: Callable[[float], None] = time.sleep,
         on_unlocked: Callable[[], None] = lambda: None,
+        recheck: Callable[[], str] | None = None,
     ):
         """``verify`` returns MATCH, NO_MATCH, CANCELLED or CAMERA;
         ``notify`` shows a short message (used during the cooldown);
-        ``on_unlocked`` runs once WhatsApp is back (closes the camera window)."""
+        ``on_unlocked`` runs once WhatsApp is back (closes the camera window);
+        ``recheck`` is the quiet background check: MATCH, ABSENT (nobody
+        there), STRANGER (a face that isn't yours) or CAMERA."""
         self.cfg = cfg
         self.api = api
         self.verify = verify
@@ -122,6 +131,8 @@ class WhatsAppGuard:
         self.notify = notify
         self.sleep = sleep
         self.on_unlocked = on_unlocked
+        self.recheck = recheck
+        self.next_recheck = 0.0
         # Windows we minimised while locked, in order; all come back on unlock.
         self.hidden: dict[int, None] = {}
         self.locked = True
@@ -183,6 +194,16 @@ class WhatsAppGuard:
                 log.warning("could not bring WhatsApp back: %s", self.api.describe(hwnd))
             log.debug("restored %s", self.api.describe(hwnd))
 
+    def close_whatsapp(self, why: str) -> None:
+        """With on_fail = "close", force-quit WhatsApp.  Only the processes in
+        ``processes`` are ever killed: a browser matched by title is just
+        minimised."""
+        if self.cfg.on_fail != "close":
+            return
+        killed = self.api.close_app(self.cfg.processes)
+        self.hidden.clear()
+        log.info("closed WhatsApp (%s): %d process(es) ended", why, killed)
+
     def lock(self) -> None:
         if not self.locked:
             log.info("locking WhatsApp")
@@ -205,6 +226,7 @@ class WhatsAppGuard:
             if self.is_whatsapp(fg) and not self.api.is_minimized(fg):
                 self.left_at = None
                 self.was_active = True
+                self._maybe_recheck(fg, now)
             elif self.was_active:
                 if self.left_at is None:
                     self.left_at = now
@@ -230,30 +252,58 @@ class WhatsAppGuard:
             self.armed = True
             return
         log.debug("WhatsApp on screen while locked: %s", self.api.describe(opened))
-        hit = opened
         if not self.armed:
             return
         self.armed = False
 
         if now < self.cooldown_until:
             wait = int(self.cooldown_until - now) + 1
+            self.close_whatsapp("still in cooldown")
             self.notify(f"Too many tries. Try again in {wait} s")
             return
 
         log.info("WhatsApp opened while locked, checking face")
+        self._challenge(opened)
+
+    def _maybe_recheck(self, fg: int, now: float) -> None:
+        """While WhatsApp is open and in use, quietly make sure it's still you."""
+        if self.recheck is None or self.cfg.recheck_interval <= 0 or now < self.next_recheck:
+            return
+        outcome = self.recheck()
+        after = self.clock()
+        if outcome == MATCH:
+            self.next_recheck = after + self.cfg.recheck_interval
+            log.debug("background re-check: still you")
+        elif outcome in (ABSENT, CAMERA):
+            # An empty seat never closes WhatsApp: just look again soon.
+            self.next_recheck = after + self.cfg.recheck_absent_interval
+            log.info("background re-check: %s, trying again in %.0f s", outcome, self.cfg.recheck_absent_interval)
+        else:
+            log.info("background re-check: someone else is in front of WhatsApp")
+            main = fg if self.is_whatsapp_app_window(fg) else 0
+            self.lock()
+            self.armed = False
+            if main:
+                self._challenge(main)
+
+    def _challenge(self, main: int) -> None:
+        """Run the visible face check for a hidden WhatsApp window."""
         outcome = self.verify()
         if outcome == MATCH:
             log.info("face matched, unlocking WhatsApp")
             self.failures = 0
             self.armed = True  # ready to ask again after the next relock
             self.locked = False
-            self.bring_back(hit)
+            self.bring_back(main)
             self.unlocked_at = self.clock()
+            self.next_recheck = self.unlocked_at + self.cfg.recheck_interval
             self.left_at = None
             self.was_active = self.is_whatsapp(self.api.foreground())
             self.on_unlocked()
             return
 
+        if outcome in (NO_MATCH, CANCELLED):
+            self.close_whatsapp(outcome)
         self.sweep()  # in case it was clicked again during the check
         if outcome == NO_MATCH:
             self.failures += 1

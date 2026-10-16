@@ -57,3 +57,17 @@ def test_status_runs(home, capsys):
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "running:" in out and "enrolled:   no" in out
+
+
+def test_intruders_command(home, capsys):
+    import numpy as np
+
+    from facegate import intruders
+
+    assert cli.main(["intruders"]) == 0
+    assert "no failed attempts" in capsys.readouterr().out
+    intruders.save(np.zeros((10, 10, 3), np.uint8))
+    assert cli.main(["intruders"]) == 0
+    assert "1 photo(s)" in capsys.readouterr().out
+    assert cli.main(["intruders", "--clear"]) == 0
+    assert intruders.photos() == []

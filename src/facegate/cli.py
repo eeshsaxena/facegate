@@ -194,12 +194,39 @@ def cmd_status(args) -> int:
     print("autostart:  " + auto)
     enr = store.load(user_dir(), winapi.current_user_sid())
     print("enrolled:   " + (f"yes, {len(enr.embeddings)} samples" if enr else "no  (`facegate enroll`)"))
+    from facegate import intruders
+
+    shots = intruders.photos()
+    print(f"intruders: {len(shots)} photo(s)" + (f", latest {shots[-1].name}" if shots else ""))
     log_path = user_dir() / "facegate.log"
     if log_path.exists():
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
         print(f"last log lines ({log_path}):")
         for line in lines:
             print("  " + line)
+    return 0
+
+
+def cmd_intruders(args) -> int:
+    import os
+
+    from facegate import intruders
+
+    if args.clear:
+        print(f"deleted {intruders.clear()} photo(s)")
+        return 0
+    shots = intruders.photos()
+    if args.open:
+        intruders.folder().mkdir(parents=True, exist_ok=True)
+        os.startfile(intruders.folder())  # opens it in File Explorer
+        return 0
+    if not shots:
+        print("no failed attempts recorded")
+        return 0
+    print(f"{len(shots)} photo(s) of failed attempts in {intruders.folder()}:")
+    for p in shots[-10:]:
+        print("  " + p.name)
+    print("open the folder with `facegate intruders --open`")
     return 0
 
 
@@ -303,6 +330,10 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_start)
     sub.add_parser("stop", help="stop the background FaceGate").set_defaults(func=cmd_stop)
     sub.add_parser("status", help="is it running, autostart, enrollment, recent log").set_defaults(func=cmd_status)
+    i = sub.add_parser("intruders", help="photos of people who failed the face check")
+    i.add_argument("--open", action="store_true", help="open the folder")
+    i.add_argument("--clear", action="store_true", help="delete them all")
+    i.set_defaults(func=cmd_intruders)
     sub.add_parser("doctor", help="check models, enrollment and camera").set_defaults(func=cmd_doctor)
     return p
 
