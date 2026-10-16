@@ -5,13 +5,31 @@ or fingerprint reader.
 
 - **WhatsApp lock:** WhatsApp Desktop stays locked until the webcam sees
   your face. Once unlocked it stays open while you use it, then locks again
-  after 2 minutes in the background or when you lock Windows.
+  after 30 seconds in the background or as soon as you lock Windows.
 - **Walk-away lock:** Windows locks itself when nobody has been in front of
   the camera for 30 seconds. This is optional and off by default.
 
 It's lightweight: two small OpenCV models run on the CPU (no GPU, no
 dlib build, no cloud), it uses a couple of threads at most, and the
 camera is only on while it is actually checking.
+
+## How the WhatsApp lock behaves
+
+- **Instant.** A Windows event hook reports every window change, so
+  WhatsApp is minimized the moment it comes to the front. There's also a
+  once-a-second backup sweep. Nothing is injected into WhatsApp.
+- **Every window.** Popped-out chat windows are hidden too, not just the
+  main one. Dialogs follow their main window.
+- **Fails closed.** The agent starts locked and hides WhatsApp if it's
+  already on screen. Clicking WhatsApp again during a check just hides it again.
+- **Restarts itself.** `facegate agent` supervises the actual lock process
+  and restarts it within 3 seconds if it crashes or is killed. Stop it
+  properly with `facegate agent stop`.
+- **No camera loops.** After 3 faces that don't match in a row, it stops
+  asking for 30 seconds. Pressing Esc or a busy camera (Teams, Meet)
+  doesn't count as a wrong face.
+- **Logs** go to `%LOCALAPPDATA%\FaceGate\facegate.log` (rotated at 1 MB).
+  Faces and frames are never logged.
 
 ## How it works
 
@@ -105,7 +123,9 @@ liveness_min_range = 0.10
 enabled = true
 processes = ["WhatsApp.exe", "WhatsApp.Root.exe"]
 window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
-relock_after = 120.0
+relock_after = 30.0       # seconds in the background before it locks again
+max_failures = 3          # wrong faces in a row before a cooldown
+cooldown = 30.0
 
 [presence]
 enabled = false
@@ -156,9 +176,9 @@ src/facegate/
   engine.py     YuNet + SFace wrapper, match score
   liveness.py   head-turn check
   verify.py     enroll and verify loops (camera-agnostic)
-  whatsapp.py   WhatsApp lock state machine
+  whatsapp.py   WhatsApp lock state machine + window sweep
   presence.py   walk-away lock
-  agent.py      background process that runs both
+  agent.py      background agent, camera owner, crash supervisor
   winapi.py     the Win32 calls, via ctypes
   models.py     pinned model download
   store.py      enrolled fingerprints
