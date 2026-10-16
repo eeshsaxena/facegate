@@ -22,9 +22,9 @@ camera is only on while it is actually checking.
   main one. Dialogs follow their main window.
 - **Fails closed.** The agent starts locked and hides WhatsApp if it's
   already on screen. Clicking WhatsApp again during a check just hides it again.
-- **Restarts itself.** `facegate agent` supervises the actual lock process
+- **Restarts itself.** `facegate start` runs a small watchdog over the lock process
   and restarts it within 3 seconds if it crashes or is killed. Stop it
-  properly with `facegate agent stop`.
+  properly with `facegate stop`.
 - **No camera loops.** After 3 faces that don't match in a row, it stops
   asking for 30 seconds. Pressing Esc or a busy camera (Teams, Meet)
   doesn't count as a wrong face.
@@ -77,29 +77,32 @@ can see how reliable it is in your lighting.
 
 ## Use
 
-Start the background agent:
+Start it in the background. It keeps running after you close the terminal:
 
 ```bash
-facegate agent
+facegate start
 ```
 
-Add the walk-away lock:
-
-```bash
-facegate agent --presence
-```
-
-Start it automatically when you sign in (runs windowless with `pythonw`):
+Start it automatically every time you sign in to Windows:
 
 ```bash
 facegate autostart on
 ```
 
+Check on it (running, autostart, enrollment, last log lines):
+
+```bash
+facegate status
+```
+
 Stop it:
 
 ```bash
-facegate agent stop
+facegate stop
 ```
+
+Add `--presence` to `facegate start` for the walk-away lock. `facegate agent`
+runs it in the current terminal instead (Ctrl+C stops it).
 
 Other commands: `facegate doctor` checks the models, your enrollment and the
 camera. `facegate config` writes a settings file you can edit.
