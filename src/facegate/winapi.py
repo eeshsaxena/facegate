@@ -74,6 +74,28 @@ kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = HANDLE
 kernel32.GetCurrentProcess.restype = HANDLE
 kernel32.OpenMutexW.argtypes = [DWORD, BOOL, wintypes.LPCWSTR]
+kernel32.TerminateProcess.argtypes = [HANDLE, ctypes.c_uint]
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", DWORD),
+        ("cntUsage", DWORD),
+        ("th32ProcessID", DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", DWORD),
+        ("cntThreads", DWORD),
+        ("th32ParentProcessID", DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+kernel32.CreateToolhelp32Snapshot.argtypes = [DWORD, DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = HANDLE
+kernel32.Process32FirstW.argtypes = [HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.argtypes = [HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
 kernel32.OpenMutexW.restype = HANDLE
 
 advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
@@ -191,6 +213,39 @@ def is_app_window(hwnd: int) -> bool:
     if not user32.IsWindowVisible(hwnd) or owner(hwnd):
         return False
     return not (user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+
+
+def find_processes(names) -> list[int]:
+    """Process ids whose executable name is in ``names`` (case-insensitive)."""
+    TH32CS_SNAPPROCESS = 0x2
+    wanted = {n.lower() for n in names}
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == HANDLE(-1).value:
+        return []
+    pids = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.szExeFile.lower() in wanted and entry.th32ProcessID != os.getpid():
+                pids.append(entry.th32ProcessID)
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return pids
+
+
+def terminate(pid: int, exit_code: int = 1) -> bool:
+    """Force-quit a process.  Only works on your own processes (no admin)."""
+    PROCESS_TERMINATE = 0x0001
+    h = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+    if not h:
+        return False
+    try:
+        return bool(kernel32.TerminateProcess(h, exit_code))
+    finally:
+        kernel32.CloseHandle(h)
 
 
 def is_window(hwnd: int) -> bool:

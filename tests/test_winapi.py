@@ -65,3 +65,28 @@ def test_mutex_exists():
 def test_is_app_window_on_real_windows():
     for h in winapi.top_level_windows()[:30]:
         assert isinstance(winapi.is_app_window(h), bool)
+
+
+def test_find_and_terminate_a_process():
+    import subprocess
+    import sys
+    import time
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        time.sleep(0.3)
+        name = __import__("os").path.basename(sys.executable)
+        assert child.pid in winapi.find_processes([name.upper()])  # case-insensitive
+        assert winapi.terminate(child.pid)
+        assert child.wait(5) == 1
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+def test_find_processes_never_returns_this_process():
+    import os
+    import sys
+
+    assert os.getpid() not in winapi.find_processes([os.path.basename(sys.executable)])
+    assert winapi.terminate(0) is False
