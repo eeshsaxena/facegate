@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facegate"
+version = "0.1.0"
+description = "Face unlock for Windows laptops without an IR camera: lock screen, WhatsApp Desktop and walk-away lock, using a normal webcam."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Eesh Saxena", email = "eeshsaxena@gmail.com" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["pyinstaller>=6"]
+
+[project.scripts]
+facegate = "facegate.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/eeshsaxena/facegate"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "models: needs the ONNX models (downloaded on first run)",
+    "admin: needs an elevated prompt",
+]
