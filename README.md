@@ -7,6 +7,14 @@ or fingerprint reader.
   the webcam checks your face first. While you're using it, including its
   own dialogs like the file picker, it stays open. Switch to something else
   and it locks and minimizes within a second. Locking Windows locks it too.
+- **Wrong face? WhatsApp is closed.** If the face doesn't match (or the
+  check is cancelled), WhatsApp's process is ended, not just hidden, and a
+  photo of whoever tried is saved on your laptop.
+- **Quiet re-check every minute.** While WhatsApp is open, FaceGate checks
+  in the background that it's still you, with no window and no head turn.
+  If nobody is in front of the camera, WhatsApp stays open and it checks
+  again every 10 seconds. If someone else is there, WhatsApp hides and the
+  normal camera check appears; failing that closes it.
 - **Walk-away lock:** Windows locks itself when nobody has been in front of
   the camera for 30 seconds. This is optional and off by default.
 
@@ -35,6 +43,11 @@ camera is only on while it is actually checking.
 - **Restarts itself.** `facegate start` runs a small watchdog over the lock process
   and restarts it within 3 seconds if it crashes or is killed. Stop it
   properly with `facegate stop`.
+- **Intruder photos.** A failed check saves a JPEG of the person in front of
+  the camera to `%LOCALAPPDATA%\FaceGate\intruders`, named by date, time
+  and cause (`stranger`, `noface`, `cancelled`, `stranger-recheck`). Only
+  the newest 100 are kept. They never leave the laptop. See them with
+  `facegate intruders`.
 - **No camera loops.** After 3 faces that don't match in a row, it stops
   asking for 30 seconds. Pressing Esc or a busy camera (Teams, Meet)
   doesn't count as a wrong face.
@@ -51,8 +64,10 @@ camera is only on while it is actually checking.
 | "Is it a real head?" | head-turn check (below) | none |
 
 Both models come from the OpenCV Model Zoo and are pinned by SHA-256.
-FaceGate refuses a download that doesn't match. Only the fingerprints are
-saved (`%LOCALAPPDATA%\FaceGate\faces\<your SID>.npz`), never a photo.
+FaceGate refuses a download that doesn't match. Your own face is kept only
+as fingerprints (`%LOCALAPPDATA%\FaceGate\faces\<your SID>.npz`), never as a
+photo. The only photos FaceGate takes are of failed attempts (see above),
+which you can turn off with `save_intruder_photos = false`.
 
 **Head-turn check.** While it is matching, FaceGate asks you to turn your
 head slightly. It measures how far the nose moves sideways compared with
@@ -114,6 +129,12 @@ facegate stop
 Add `--presence` to `facegate start` for the walk-away lock. `facegate agent`
 runs it in the current terminal instead (Ctrl+C stops it).
 
+See photos of failed attempts (`--open` shows the folder, `--clear` deletes):
+
+```bash
+facegate intruders
+```
+
 Other commands: `facegate doctor` checks the models, your enrollment and the
 camera. `facegate config` writes a settings file you can edit.
 `facegate forget` deletes your enrolled face.
@@ -139,6 +160,12 @@ window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
 relock_after = 1.0        # seconds out of focus before it locks again
 focus_grace = 10.0        # lock if it never gets focus after an unlock
 camera_keep_open = 15.0   # keep the webcam warm for quick re-checks (0 = off)
+on_fail = "close"         # wrong face: "close" quits WhatsApp, "minimize" hides it
+recheck_interval = 60.0   # quiet face re-check while WhatsApp is open (0 = off)
+recheck_absent_interval = 10.0   # nobody there: stay open, re-check this often
+recheck_timeout = 6.0
+save_intruder_photos = true   # photo of whoever fails the check (local only)
+intruder_photos_keep = 100
 max_failures = 3          # wrong faces in a row before a cooldown
 cooldown = 30.0
 
@@ -159,6 +186,11 @@ Be clear-eyed about this. It is a convenience lock, not Windows Hello.
   of you on a phone.
 - It **does not stop** a video of you turning your head, or a good 3D mask.
   Windows Hello needs an IR camera for exactly this reason.
+- Closing WhatsApp on a wrong face is a force-quit: a message you were
+  typing but hadn't sent may be lost. Set `on_fail = "minimize"` if you'd
+  rather it just hide.
+- The background re-check turns the camera (and its light) on about once
+  a minute while WhatsApp is open.
 - The WhatsApp lock minimizes the window. Notification previews and the
   taskbar thumbnail can still show message text. For stronger protection,
   also turn on WhatsApp's own **Settings > Privacy > App lock**.
