@@ -50,6 +50,14 @@ class FakeClock:
         return self.t
 
 
+@pytest.fixture(autouse=True)
+def isolated_instance(monkeypatch):
+    """Never signal the real background agent from a test."""
+    import uuid
+
+    monkeypatch.setenv("FACEGATE_INSTANCE", f"test-{uuid.uuid4().hex[:8]}")
+
+
 @pytest.fixture
 def frame():
     return np.zeros((480, 640, 3), np.uint8)

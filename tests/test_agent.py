@@ -59,3 +59,57 @@ def test_child_command_puts_verbose_before_the_subcommand():
     cmd = agent.child_command(["--presence"], verbose=True)
     assert cmd[:4] == [sys.executable, "-m", "facegate", "-v"]
     assert cmd[4:] == ["agent", "run", "--no-supervise", "--presence"]
+
+
+class FakeProc:
+    def __init__(self, polls_before_exit, code=0, interrupt_at=None):
+        self.left = polls_before_exit
+        self.code = code
+        self.interrupt_at = interrupt_at
+        self.returncode = None
+        self.waited = self.killed = False
+        self.polls = 0
+
+    def poll(self):
+        self.polls += 1
+        if self.interrupt_at is not None and self.polls == self.interrupt_at:
+            raise KeyboardInterrupt
+        if self.left <= 0:
+            self.returncode = self.code
+            return self.code
+        self.left -= 1
+        return None
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
+def test_run_child_waits_for_exit_code():
+    proc = FakeProc(3, code=7)
+    assert agent.run_child(["x"], popen=lambda *a, **k: proc, sleep=lambda s: None) == 7
+    assert proc.polls == 4
+
+
+def test_ctrl_c_stops_the_agent_cleanly(monkeypatch):
+    stops = []
+    monkeypatch.setattr(agent, "request_stop", lambda: stops.append(1) or True)
+    proc = FakeProc(100, interrupt_at=2)
+    assert agent.run_child(["x"], popen=lambda *a, **k: proc, sleep=lambda s: None) == agent.EXIT_OK
+    assert stops == [1] and proc.waited and not proc.killed
+
+
+def test_child_gets_no_console_handles():
+    seen = {}
+
+    def popen(cmd, **kw):
+        seen.update(kw)
+        return FakeProc(0)
+
+    agent.run_child(["x"], popen=popen, sleep=lambda s: None)
+    import subprocess
+
+    assert seen["stdin"] == seen["stdout"] == seen["stderr"] == subprocess.DEVNULL

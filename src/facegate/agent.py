@@ -8,11 +8,13 @@ doesn't stay unlocked just because a process died.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Callable
 
 from facegate import store
@@ -26,9 +28,26 @@ from facegate.whatsapp import CAMERA, WhatsAppGuard, Win32Windows
 
 log = logging.getLogger("facegate.agent")
 
-STOP_EVENT = "Local\\FaceGateAgentStop"
-MUTEX = "Local\\FaceGateAgent"
-SUPERVISOR_MUTEX = "Local\\FaceGateSupervisor"
+
+
+def _name(base: str) -> str:
+    # FACEGATE_INSTANCE gives tests their own names, so running the test
+    # suite never stops (or blocks) the real background agent.
+    suffix = os.environ.get("FACEGATE_INSTANCE", "")
+    return "Local\\" + base + (f"-{suffix}" if suffix else "")
+
+
+def stop_event_name() -> str:
+    return _name("FaceGateAgentStop")
+
+
+def mutex_name() -> str:
+    return _name("FaceGateAgent")
+
+
+def supervisor_mutex_name() -> str:
+    return _name("FaceGateSupervisor")
+
 
 # Exit codes.  The supervisor restarts on anything not listed as final.
 EXIT_OK = 0
@@ -127,11 +146,11 @@ class FaceChecker:
 def run(cfg: Config, show_preview: bool = True) -> int:
     from facegate import winapi
 
-    mutex = winapi.single_instance(MUTEX)
+    mutex = winapi.single_instance(mutex_name())
     if mutex is None:
         log.error("the agent is already running")
         return EXIT_ALREADY_RUNNING
-    stop = winapi.NamedEvent(STOP_EVENT)
+    stop = winapi.NamedEvent(stop_event_name())
 
     enrollment = store.load(user_dir(), winapi.current_user_sid())
     if enrollment is None:
@@ -182,16 +201,72 @@ def run(cfg: Config, show_preview: bool = True) -> int:
     return EXIT_OK
 
 
+def is_running() -> bool:
+    from facegate import winapi
+
+    return winapi.mutex_exists(supervisor_mutex_name()) or winapi.mutex_exists(mutex_name())
+
+
+def start_detached(extra: list[str] | None = None, verbose: bool = False) -> int:
+    """Launch the supervised agent in the background, with no window, and
+    return its process id.  It keeps running after this terminal closes."""
+    exe = Path(sys.executable)
+    windowed = exe.with_name("pythonw.exe")
+    if windowed.exists():
+        exe = windowed
+    top = ["-v"] if verbose else []
+    cmd = [str(exe), "-m", "facegate", *top, "agent", "run", *(extra or [])]
+    flags = (
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+    try:
+        # Also leave the terminal's job object, if it lets us, so closing
+        # the terminal (or the app that hosts it) doesn't take FaceGate down.
+        proc = subprocess.Popen(cmd, creationflags=flags | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                close_fds=True)
+    except OSError:
+        proc = subprocess.Popen(cmd, creationflags=flags, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    return proc.pid
+
+
 def request_stop() -> bool:
     from facegate import winapi
 
     try:
-        ev = winapi.NamedEvent(STOP_EVENT, create=False)
+        ev = winapi.NamedEvent(stop_event_name(), create=False)
     except OSError:
         return False
     ev.set()
     ev.close()
     return True
+
+
+def run_child(command: list[str], popen=subprocess.Popen, sleep: Callable[[float], None] = time.sleep) -> int:
+    """Run the agent process and wait for it, staying responsive to Ctrl+C.
+
+    A plain ``wait()`` can't be interrupted on Windows, so we poll.  Ctrl+C
+    asks the agent to stop cleanly (it has no console of its own to get the
+    signal) and is treated as a normal exit.
+    """
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = popen(command, creationflags=flags, stdin=subprocess.DEVNULL,
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        while proc.poll() is None:
+            sleep(0.5)
+        return proc.returncode
+    except KeyboardInterrupt:
+        log.info("Ctrl+C, stopping the agent")
+        request_stop()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return EXIT_OK
 
 
 def child_command(extra: list[str], verbose: bool = False) -> list[str]:
@@ -213,9 +288,7 @@ def supervise(
     Gives up if it crashes more than ``max_restarts`` times in ``window``
     seconds (something is really wrong; see facegate.log).
     """
-    if runner is None:
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        runner = lambda cmd: subprocess.call(cmd, creationflags=flags)  # noqa: E731
+    runner = runner or run_child
     crashes: deque[float] = deque()
     while True:
         code = runner(command)

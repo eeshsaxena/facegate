@@ -51,3 +51,12 @@ def test_foreground_watcher_starts_and_stops():
     assert w.is_alive() and w.ok
     w.stop()
     assert not w.is_alive()
+
+
+def test_mutex_exists():
+    name = f"Local\\FaceGateTest-{uuid.uuid4()}"
+    assert not winapi.mutex_exists(name)
+    h = winapi.single_instance(name)
+    assert winapi.mutex_exists(name)
+    winapi.kernel32.CloseHandle(h)
+    assert not winapi.mutex_exists(name)

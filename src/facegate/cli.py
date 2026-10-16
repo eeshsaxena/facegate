@@ -63,7 +63,7 @@ def cmd_enroll(args) -> int:
         preview.close()
     path = store.save(user_dir(), store.Enrollment(sid, winapi.current_user_sam_name(), emb))
     print(f"saved {len(emb)} face samples to {path}")
-    print("Now try `facegate test`.")
+    print("Next: `facegate test`, then `facegate start` (and `facegate autostart on` to start it at sign-in).")
     return 0
 
 
@@ -113,7 +113,7 @@ def cmd_agent(args) -> int:
 
     if not args.no_supervise:
         _setup_logging(args.verbose, "supervisor.log")
-        mutex = winapi.single_instance(agent.SUPERVISOR_MUTEX)
+        mutex = winapi.single_instance(agent.supervisor_mutex_name())
         if mutex is None:
             logging.error("the agent is already running")
             return agent.EXIT_ALREADY_RUNNING
@@ -137,6 +137,70 @@ def cmd_agent(args) -> int:
     except ModelsMissing as e:
         logging.error("%s", e)
         return agent.EXIT_SETUP
+
+
+def cmd_start(args) -> int:
+    import time
+
+    from facegate import agent, winapi
+
+    if agent.is_running():
+        print("FaceGate is already running")
+        return 0
+    if store.load(user_dir(), winapi.current_user_sid()) is None:
+        print("no face enrolled yet; run `facegate enroll` first")
+        return agent.EXIT_NOT_ENROLLED
+    extra = ["--presence"] if args.presence else []
+    agent.start_detached(extra, args.verbose)
+    for _ in range(40):  # the agent loads its models in about a second
+        time.sleep(0.25)
+        if winapi.mutex_exists(agent.mutex_name()):
+            print("FaceGate is running in the background. Open WhatsApp to try it.")
+            print("It keeps running after you close this window; stop it with `facegate stop`.")
+            return 0
+    print(f"FaceGate did not start; see {user_dir() / 'facegate.log'}")
+    return 1
+
+
+def cmd_stop(args) -> int:
+    import time
+
+    from facegate import agent
+
+    if not agent.request_stop():
+        print("FaceGate is not running")
+        return 0
+    for _ in range(40):
+        time.sleep(0.25)
+        if not agent.is_running():
+            print("FaceGate stopped")
+            return 0
+    print("stop signal sent, but it is still shutting down")
+    return 1
+
+
+def cmd_status(args) -> int:
+    import winreg
+
+    from facegate import agent, winapi
+
+    print("running:    " + ("yes" if agent.is_running() else "no  (start it with `facegate start`)"))
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            winreg.QueryValueEx(key, RUN_VALUE)
+        auto = "on"
+    except FileNotFoundError:
+        auto = "off (turn on with `facegate autostart on`)"
+    print("autostart:  " + auto)
+    enr = store.load(user_dir(), winapi.current_user_sid())
+    print("enrolled:   " + (f"yes, {len(enr.embeddings)} samples" if enr else "no  (`facegate enroll`)"))
+    log_path = user_dir() / "facegate.log"
+    if log_path.exists():
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
+        print(f"last log lines ({log_path}):")
+        for line in lines:
+            print("  " + line)
+    return 0
 
 
 def _agent_command() -> str:
@@ -234,6 +298,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("autostart", help="start the agent when you sign in")
     s.add_argument("action", choices=["on", "off", "status"])
     s.set_defaults(func=cmd_autostart)
+    st = sub.add_parser("start", help="run FaceGate in the background (survives closing the terminal)")
+    st.add_argument("--presence", action="store_true", help="also turn on the walk-away lock")
+    st.set_defaults(func=cmd_start)
+    sub.add_parser("stop", help="stop the background FaceGate").set_defaults(func=cmd_stop)
+    sub.add_parser("status", help="is it running, autostart, enrollment, recent log").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="check models, enrollment and camera").set_defaults(func=cmd_doctor)
     return p
 

@@ -36,3 +36,24 @@ def test_autostart_command_uses_windowless_python():
 def test_parser_requires_a_command():
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args([])
+
+
+def test_stop_when_not_running(home, capsys):
+    assert cli.main(["stop"]) == 0
+    assert "not running" in capsys.readouterr().out
+
+
+def test_start_refuses_without_enrollment(home, capsys, monkeypatch):
+    from facegate import agent
+
+    monkeypatch.setattr(agent, "is_running", lambda: False)
+    launched = []
+    monkeypatch.setattr(agent, "start_detached", lambda *a, **k: launched.append(a))
+    assert cli.main(["start"]) == agent.EXIT_NOT_ENROLLED
+    assert launched == [] and "enroll" in capsys.readouterr().out
+
+
+def test_status_runs(home, capsys):
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "running:" in out and "enrolled:   no" in out

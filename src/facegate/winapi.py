@@ -70,6 +70,8 @@ kernel32.WaitForSingleObject.restype = DWORD
 kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = HANDLE
 kernel32.GetCurrentProcess.restype = HANDLE
+kernel32.OpenMutexW.argtypes = [DWORD, BOOL, wintypes.LPCWSTR]
+kernel32.OpenMutexW.restype = HANDLE
 
 advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
 advapi32.GetTokenInformation.argtypes = [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)]
@@ -351,6 +353,14 @@ class NamedEvent:
         if self.handle:
             kernel32.CloseHandle(self.handle)
             self.handle = None
+
+
+def mutex_exists(name: str) -> bool:
+    h = kernel32.OpenMutexW(SYNCHRONIZE, False, name)
+    if h:
+        kernel32.CloseHandle(h)
+        return True
+    return False
 
 
 def single_instance(name: str) -> HANDLE | None:
