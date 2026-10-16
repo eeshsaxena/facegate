@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import threading
 from ctypes import wintypes
 
 if sys.platform != "win32":  # pragma: no cover
@@ -37,6 +38,23 @@ user32.CloseDesktop.argtypes = [HANDLE]
 user32.GetUserObjectInformationW.argtypes = [HANDLE, ctypes.c_int, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)]
 EnumProc = ctypes.WINFUNCTYPE(BOOL, HWND, wintypes.LPARAM)
 user32.EnumChildWindows.argtypes = [HWND, EnumProc, wintypes.LPARAM]
+user32.EnumWindows.argtypes = [EnumProc, wintypes.LPARAM]
+user32.IsWindowVisible.argtypes = [HWND]
+user32.GetWindow.argtypes = [HWND, ctypes.c_uint]
+user32.GetWindow.restype = HWND
+user32.BringWindowToTop.argtypes = [HWND]
+user32.AttachThreadInput.argtypes = [DWORD, DWORD, BOOL]
+WinEventProc = ctypes.WINFUNCTYPE(
+    None, HANDLE, DWORD, HWND, wintypes.LONG, wintypes.LONG, DWORD, DWORD)
+user32.SetWinEventHook.argtypes = [DWORD, DWORD, wintypes.HMODULE, WinEventProc, DWORD, DWORD, DWORD]
+user32.SetWinEventHook.restype = HANDLE
+user32.UnhookWinEvent.argtypes = [HANDLE]
+user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), HWND, ctypes.c_uint, ctypes.c_uint]
+user32.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), HWND, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.PostThreadMessageW.argtypes = [DWORD, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]
+kernel32.GetCurrentThreadId.restype = DWORD
 
 kernel32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
 kernel32.OpenProcess.restype = HANDLE
@@ -67,6 +85,13 @@ WAIT_OBJECT_0 = 0
 EVENT_MODIFY_STATE = 0x0002
 SYNCHRONIZE = 0x00100000
 ERROR_ALREADY_EXISTS = 183
+GW_OWNER = 4
+EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_SYSTEM_MINIMIZEEND = 0x0017
+WINEVENT_OUTOFCONTEXT = 0x0000
+WINEVENT_SKIPOWNPROCESS = 0x0002
+WM_QUIT = 0x0012
+PM_NOREMOVE = 0x0000
 
 
 # --- windows -----------------------------------------------------------------
@@ -134,6 +159,26 @@ def app_process_name(hwnd: int) -> str:
     return name
 
 
+def top_level_windows() -> list[int]:
+    found: list[int] = []
+
+    @EnumProc
+    def cb(hwnd, _):
+        found.append(hwnd)
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return found
+
+
+def is_visible(hwnd: int) -> bool:
+    return bool(user32.IsWindowVisible(hwnd))
+
+
+def owner(hwnd: int) -> int:
+    return user32.GetWindow(hwnd, GW_OWNER) or 0
+
+
 def is_window(hwnd: int) -> bool:
     return bool(hwnd) and bool(user32.IsWindow(hwnd))
 
@@ -147,8 +192,77 @@ def minimize(hwnd: int) -> None:
 
 
 def restore(hwnd: int) -> None:
+    """Un-minimise and bring to the front, even from a background process.
+
+    Windows only lets the process that owns the foreground change it, so if
+    the plain call is refused we briefly share input with whoever owns it.
+    """
     user32.ShowWindow(hwnd, SW_RESTORE)
-    user32.SetForegroundWindow(hwnd)
+    if user32.SetForegroundWindow(hwnd):
+        return
+    me = kernel32.GetCurrentThreadId()
+    fg_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    attached = bool(fg_thread) and fg_thread != me and bool(user32.AttachThreadInput(me, fg_thread, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(me, fg_thread, False)
+
+
+class ForegroundWatcher(threading.Thread):
+    """Calls ``on_event()`` the instant any window comes to the front or is
+    un-minimised, so a locked WhatsApp window is hidden before it can be read.
+
+    Uses an out-of-context WinEvent hook: nothing is injected into other
+    processes, and the thread sleeps in GetMessage between events.
+    """
+
+    EVENTS = (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND)
+
+    def __init__(self, on_event):
+        super().__init__(name="facegate-foreground", daemon=True)
+        self.on_event = on_event
+        self.ok = False
+        self._tid = 0
+        self._ready = threading.Event()
+
+    def run(self) -> None:
+        self._tid = kernel32.GetCurrentThreadId()
+        msg = wintypes.MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)  # create the queue
+
+        def handler(hook, event, hwnd, id_object, id_child, thread, time_ms):
+            if id_object == 0:  # OBJID_WINDOW
+                try:
+                    self.on_event()
+                except Exception:
+                    pass
+
+        self._proc = WinEventProc(handler)  # keep a reference alive
+        flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        hooks = [user32.SetWinEventHook(e, e, None, self._proc, 0, 0, flags) for e in self.EVENTS]
+        self.ok = all(hooks)
+        self._ready.set()
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            for h in hooks:
+                if h:
+                    user32.UnhookWinEvent(h)
+
+    def start(self) -> "ForegroundWatcher":
+        super().start()
+        self._ready.wait(2.0)
+        return self
+
+    def stop(self) -> None:
+        if self._tid:
+            user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0)
+        self.join(2.0)
 
 
 # --- session -----------------------------------------------------------------

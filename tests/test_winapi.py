@@ -36,3 +36,18 @@ def test_window_helpers_dont_crash_on_bad_handles():
     assert winapi.window_title(0) == ""
     assert winapi.process_name(0) == ""
     assert isinstance(winapi.session_locked(), bool)
+
+
+def test_top_level_windows_and_helpers():
+    wins = winapi.top_level_windows()
+    assert isinstance(wins, list)
+    for h in wins[:20]:
+        assert isinstance(winapi.is_visible(h), bool)
+        assert isinstance(winapi.owner(h), int)
+
+
+def test_foreground_watcher_starts_and_stops():
+    w = winapi.ForegroundWatcher(lambda: None).start()
+    assert w.is_alive() and w.ok
+    w.stop()
+    assert not w.is_alive()
