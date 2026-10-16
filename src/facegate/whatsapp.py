@@ -6,9 +6,11 @@ While locked:
   * bringing WhatsApp to the front starts a face check; if it's you, the
     window comes back.
 
-Once unlocked it stays open while you use it.  It locks again (and is
-minimised) after ``relock_after`` seconds in the background, or as soon as
-Windows itself is locked.
+Once unlocked it stays open while you use it, including its own dialogs
+(file picker, menus).  As soon as you switch to something else it locks
+again (after ``relock_after`` seconds, 1 s by default) and is minimised, so
+every time WhatsApp opens or comes back to the front, your face is checked.
+Locking Windows locks it too.
 
 It fails closed: the agent starts locked, so if it is restarted WhatsApp is
 hidden again until your face is checked.
@@ -126,7 +128,10 @@ class WhatsAppGuard:
         # After a check we wait for WhatsApp to leave the front before asking
         # again, so the camera never loops on its own.
         self.armed = True
-        self.last_active = 0.0
+        self.left_at: float | None = None  # when WhatsApp lost the focus
+        self.unlocked_at = 0.0
+        # Has WhatsApp actually had the focus since the last unlock?
+        self.was_active = False
         self.failures = 0
         self.cooldown_until = 0.0
         self._procs = {p.lower() for p in cfg.processes}
@@ -191,15 +196,28 @@ class WhatsAppGuard:
             return
 
         fg = self.api.foreground()
-        hit = fg if self.is_whatsapp_app_window(fg) else 0
         now = self.clock()
 
         if not self.locked:
-            if hit:
-                self.last_active = now
-            elif now - self.last_active >= self.cfg.relock_after:
+            # Any WhatsApp window counts as still using it (its dialogs and
+            # menus are separate windows), unless it's minimised: Windows can
+            # leave the focus on a minimised window.
+            if self.is_whatsapp(fg) and not self.api.is_minimized(fg):
+                self.left_at = None
+                self.was_active = True
+            elif self.was_active:
+                if self.left_at is None:
+                    self.left_at = now
+                if now - self.left_at >= self.cfg.relock_after:
+                    self.lock()
+            elif now - self.unlocked_at >= max(self.cfg.relock_after, self.cfg.focus_grace):
+                # Restored but Windows never gave it the focus: don't leave it
+                # unlocked behind other windows for ever.
                 self.lock()
             return
+
+        in_front = self.is_whatsapp_app_window(fg) and not self.api.is_minimized(fg)
+        hit = fg if in_front else 0
 
         # WhatsApp counts as "opened" when one of its windows is in front OR
         # simply on screen: Windows doesn't always activate a window that
@@ -230,7 +248,9 @@ class WhatsAppGuard:
             self.armed = True  # ready to ask again after the next relock
             self.locked = False
             self.bring_back(hit)
-            self.last_active = self.clock()
+            self.unlocked_at = self.clock()
+            self.left_at = None
+            self.was_active = self.is_whatsapp(self.api.foreground())
             self.on_unlocked()
             return
 

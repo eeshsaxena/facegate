@@ -46,6 +46,7 @@ user32.GetWindowLongW.argtypes = [HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.BringWindowToTop.argtypes = [HWND]
 user32.AttachThreadInput.argtypes = [DWORD, DWORD, BOOL]
+user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, DWORD, ctypes.c_size_t]
 WinEventProc = ctypes.WINFUNCTYPE(
     None, HANDLE, DWORD, HWND, wintypes.LONG, wintypes.LONG, DWORD, DWORD)
 user32.SetWinEventHook.argtypes = [DWORD, DWORD, wintypes.HMODULE, WinEventProc, DWORD, DWORD, DWORD]
@@ -214,7 +215,8 @@ def restore(hwnd: int) -> None:
     if not user32.IsWindowVisible(hwnd):
         user32.ShowWindow(hwnd, SW_SHOW)
     user32.ShowWindow(hwnd, SW_RESTORE)
-    if user32.SetForegroundWindow(hwnd):
+    user32.SetForegroundWindow(hwnd)
+    if user32.GetForegroundWindow() == hwnd:
         return
     me = kernel32.GetCurrentThreadId()
     fg_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
@@ -225,6 +227,14 @@ def restore(hwnd: int) -> None:
     finally:
         if attached:
             user32.AttachThreadInput(me, fg_thread, False)
+    if user32.GetForegroundWindow() == hwnd:
+        return
+    # Last resort, the same one AutoHotkey uses: a synthetic Alt tap lifts
+    # Windows' foreground lock for the next SetForegroundWindow call.
+    VK_MENU, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 0x12, 0x1, 0x2
+    user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0)
+    user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    user32.SetForegroundWindow(hwnd)
 
 
 class ForegroundWatcher(threading.Thread):

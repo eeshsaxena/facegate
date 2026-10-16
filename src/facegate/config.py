@@ -43,8 +43,14 @@ class WhatsAppConfig:
     # Substrings of window titles to guard too, e.g. ["WhatsApp"] for
     # web.whatsapp.com in a browser.  Off by default: it minimises the browser.
     window_titles: list[str] = field(default_factory=list)
-    # Lock again after WhatsApp has been out of focus this long (seconds).
-    relock_after: float = 30.0
+    # Lock again once WhatsApp has been out of focus this long (seconds).
+    # 1 s means: every time it comes back to the front, check the face.
+    relock_after: float = 1.0
+    # If WhatsApp never gets the focus after an unlock, lock after this long.
+    focus_grace: float = 10.0
+    # Keep the webcam open this long after a check so the next one is instant
+    # (0 = turn it off right away; the camera light stays on meanwhile).
+    camera_keep_open: float = 15.0
     # After this many faces that didn't match in a row, stop asking for a while.
     max_failures: int = 3
     cooldown: float = 30.0
@@ -123,7 +129,9 @@ liveness_min_range = 0.10
 enabled = true
 processes = ["WhatsApp.exe", "WhatsApp.Root.exe"]
 window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
-relock_after = 30.0       # seconds in the background before it locks again
+relock_after = 1.0        # seconds out of focus before it locks again
+focus_grace = 10.0
+camera_keep_open = 15.0   # keep the webcam warm for quick re-checks (0 = off)
 max_failures = 3          # wrong faces in a row before a cooldown
 cooldown = 30.0
 

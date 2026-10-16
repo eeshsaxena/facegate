@@ -57,10 +57,9 @@ class FakeWindows:
         return self.locked_session
 
     def minimize(self, h):
+        # Like real Windows, the minimised window can keep the focus.
         self.calls.append(("min", h))
         self.wins[h].minimized = True
-        if self.fg == h:
-            self.fg = 0
 
     def restore(self, h):
         self.calls.append(("restore", h))
@@ -157,8 +156,68 @@ def test_camera_window_closes_only_after_whatsapp_is_back():
     assert events == ["restore", "close camera window"]
 
 
-def test_default_relock_is_30_seconds():
-    assert WhatsAppConfig().relock_after == 30.0
+def test_default_asks_every_time_it_comes_back_to_the_front():
+    assert WhatsAppConfig().relock_after == 1.0
+
+
+def test_switching_away_and_back_asks_for_face_again():
+    g, api, clock, asked, _ = guard([MATCH, MATCH])
+    api.bring_up(WA)
+    g.tick()
+    assert not g.locked
+    clock.t, api.fg = 5, CODE  # you click your editor
+    g.tick()
+    clock.t = 6.1
+    g.tick()
+    assert g.locked and not visible(api, WA)
+    clock.t = 8
+    api.bring_up(WA)  # and come back to WhatsApp
+    g.tick()
+    assert asked == [0.0, 8] and visible(api, WA)
+
+
+def test_a_quick_focus_flicker_does_not_lock():
+    g, api, clock, asked, _ = guard([MATCH])
+    api.bring_up(WA)
+    g.tick()
+    clock.t, api.fg = 3, CODE
+    g.tick()
+    clock.t, api.fg = 3.5, WA  # back within a second
+    g.tick()
+    clock.t = 10
+    g.tick()
+    assert not g.locked and asked == [0.0]
+
+
+def test_whatsapp_dialogs_keep_it_unlocked():
+    g, api, clock, asked, _ = guard([MATCH])
+    api.wins[WA_POPUP] = Win("WhatsApp.Root.exe", "Open", owner=WA)  # file picker
+    api.bring_up(WA)
+    g.tick()
+    clock.t, api.fg = 2, WA_POPUP
+    g.tick()
+    clock.t = 30
+    g.tick()
+    assert not g.locked and visible(api, WA)
+
+
+def test_unfocused_restore_gets_a_grace_period_then_locks():
+    g, api, clock, asked, _ = guard([MATCH], focus_grace=10)
+    real_restore = api.restore
+
+    def restore_without_focus(h):
+        real_restore(h)
+        api.fg = CODE  # Windows refused to hand over the focus
+
+    api.restore = restore_without_focus
+    api.bring_up(WA)
+    g.tick()
+    clock.t = 5
+    g.tick()
+    assert not g.locked and visible(api, WA)
+    clock.t = 10.5
+    g.tick()
+    assert g.locked and not visible(api, WA)
 
 
 def test_whatsapp_already_on_screen_at_start_is_hidden_and_checked():
@@ -186,8 +245,8 @@ def test_opening_whatsapp_asks_for_face_and_unlocks():
     assert not g.locked
 
 
-def test_stays_unlocked_while_in_use_and_relocks_after_30s_in_background():
-    g, api, clock, asked, _ = guard([MATCH, MATCH])
+def test_relock_after_can_be_made_longer():
+    g, api, clock, asked, _ = guard([MATCH, MATCH], relock_after=30)
     api.bring_up(WA)
     g.tick()
     clock.t, api.fg = 10, CODE
@@ -303,9 +362,42 @@ def test_closed_whatsapp_is_fine():
     del api.wins[WA]
     api.fg, clock.t = CODE, 1000
     g.tick()
+    clock.t = 1002
+    g.tick()
     assert g.locked
 
 
 def test_process_names_are_case_insensitive():
     g, api, _, _, _ = guard([], processes=["whatsapp.root.EXE"])
     assert g.is_whatsapp(WA) and not g.is_whatsapp(CODE) and not g.is_whatsapp(0)
+
+
+def test_after_a_failed_check_clicking_whatsapp_asks_again_even_if_it_kept_focus():
+    # Regression: Windows left the focus on the minimised window, which looked
+    # like "still in front", so FaceGate never re-armed and WhatsApp stayed hidden.
+    g, api, clock, asked, _ = guard([NO_MATCH, MATCH])
+    api.bring_up(WA)
+    g.tick()
+    assert api.fg == WA and api.wins[WA].minimized  # minimised but focused
+    for t in (1, 2, 3):
+        clock.t = t
+        g.tick()
+    assert len(asked) == 1
+    api.bring_up(WA)  # click it in the taskbar
+    g.tick()
+    assert len(asked) == 2 and visible(api, WA) and not g.locked
+
+
+def test_minimising_whatsapp_yourself_locks_it():
+    g, api, clock, asked, _ = guard([MATCH, MATCH])
+    api.bring_up(WA)
+    g.tick()
+    api.wins[WA].minimized = True  # you hit "_"; the focus stays on it
+    clock.t = 5
+    g.tick()
+    clock.t = 6.5
+    g.tick()
+    assert g.locked
+    api.bring_up(WA)
+    g.tick()
+    assert len(asked) == 2
