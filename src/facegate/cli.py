@@ -103,12 +103,26 @@ def cmd_forget(args) -> int:
 
 
 def cmd_agent(args) -> int:
-    from facegate import agent
+    from facegate import agent, winapi
+    from facegate.models import ModelsMissing
 
     if args.action == "stop":
         ok = agent.request_stop()
         print("stop signal sent" if ok else "the agent is not running")
         return 0 if ok else 1
+
+    if not args.no_supervise:
+        _setup_logging(args.verbose, "supervisor.log")
+        mutex = winapi.single_instance(agent.SUPERVISOR_MUTEX)
+        if mutex is None:
+            logging.error("the agent is already running")
+            return agent.EXIT_ALREADY_RUNNING
+        extra = [f for f, on in (("--presence", args.presence), ("--no-whatsapp", args.no_whatsapp),
+                                 ("--no-preview", args.no_preview)) if on]
+        try:
+            return agent.supervise(agent.child_command(extra, args.verbose))
+        finally:
+            winapi.kernel32.CloseHandle(mutex)
 
     cfg = load_config()
     if args.presence:
@@ -119,7 +133,10 @@ def cmd_agent(args) -> int:
         return agent.run(cfg, show_preview=not args.no_preview)
     except agent.NotEnrolled as e:
         logging.error("%s", e)
-        return 3
+        return agent.EXIT_NOT_ENROLLED
+    except ModelsMissing as e:
+        logging.error("%s", e)
+        return agent.EXIT_SETUP
 
 
 def _agent_command() -> str:
@@ -212,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--presence", action="store_true", help="also turn on the walk-away lock")
     a.add_argument("--no-whatsapp", action="store_true", help="turn off the WhatsApp lock")
     a.add_argument("--no-preview", action="store_true", help="don't show the camera window")
+    a.add_argument("--no-supervise", action="store_true", help="don't restart the agent if it crashes")
     a.set_defaults(func=cmd_agent)
     s = sub.add_parser("autostart", help="start the agent when you sign in")
     s.add_argument("action", choices=["on", "off", "status"])
@@ -220,25 +238,31 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _setup_logging(verbose: bool) -> None:
+def _setup_logging(verbose: bool, filename: str = "facegate.log") -> None:
+    from logging.handlers import RotatingFileHandler
+
     handlers: list[logging.Handler] = []
     if sys.stderr is not None:  # None under pythonw
         handlers.append(logging.StreamHandler())
     try:
         user_dir().mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(user_dir() / "facegate.log", encoding="utf-8"))
+        handlers.append(RotatingFileHandler(user_dir() / filename, maxBytes=1_000_000, backupCount=2,
+                                            encoding="utf-8", delay=True))
     except OSError:
         pass
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format="%(asctime)s %(process)d %(name)s %(levelname)s %(message)s",
         handlers=handlers,
+        force=True,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    _setup_logging(args.verbose)
+    supervisor = args.command == "agent" and args.action == "run" and not args.no_supervise
+    if not supervisor:
+        _setup_logging(args.verbose)
     try:
         return args.func(args)
     except KeyboardInterrupt:

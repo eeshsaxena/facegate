@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import threading
 import time
 
 import numpy as np
@@ -62,25 +61,3 @@ class Camera:
     def __exit__(self, *exc) -> None:
         self.close()
 
-
-class SharedCamera:
-    """One camera for the background agent, opened on demand.
-
-    The WhatsApp lock needs it for a few seconds at a time; the walk-away lock
-    keeps it busy.  Either way it is released while Windows is locked so the
-    lock-screen verifier can use it.
-    """
-
-    def __init__(self, index: int = 0):
-        self._cam = Camera(index)
-        self._lock = threading.RLock()
-
-    def read(self) -> np.ndarray | None:
-        with self._lock:
-            if not self._cam.is_open:
-                self._cam.open()
-            return self._cam.read()
-
-    def release(self) -> None:
-        with self._lock:
-            self._cam.close()
