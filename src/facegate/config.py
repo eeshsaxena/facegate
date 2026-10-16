@@ -44,8 +44,12 @@ class WhatsAppConfig:
     # web.whatsapp.com in a browser.  Off by default: it minimises the browser.
     window_titles: list[str] = field(default_factory=list)
     # Lock again after WhatsApp has been out of focus this long (seconds).
-    relock_after: float = 120.0
-    poll_interval: float = 0.4
+    relock_after: float = 30.0
+    # After this many faces that didn't match in a row, stop asking for a while.
+    max_failures: int = 3
+    cooldown: float = 30.0
+    # Backup check interval; window changes are caught instantly by a hook.
+    poll_interval: float = 1.0
 
 
 @dataclass
@@ -119,7 +123,9 @@ liveness_min_range = 0.10
 enabled = true
 processes = ["WhatsApp.exe", "WhatsApp.Root.exe"]
 window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
-relock_after = 120.0
+relock_after = 30.0       # seconds in the background before it locks again
+max_failures = 3          # wrong faces in a row before a cooldown
+cooldown = 30.0
 
 [presence]
 enabled = false           # lock Windows when you walk away
