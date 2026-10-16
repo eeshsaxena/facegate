@@ -72,6 +72,7 @@ class FaceChecker:
         self.camera = Camera(cfg.camera_index)
         self.lock = threading.RLock()
         self._kept_preview = None
+        self.last_used = 0.0
 
     def _preview(self, title: str):
         if not self.show_preview:
@@ -82,6 +83,7 @@ class FaceChecker:
 
     def open_camera(self) -> bool:
         if self.camera.is_open:
+            self.camera.flush()
             return True
         try:
             self.camera.open()
@@ -130,8 +132,17 @@ class FaceChecker:
             finally:
                 if preview is not None:
                     preview.close()
-                if not self.cfg.presence.enabled:
+                self.last_used = time.monotonic()
+                if not self.cfg.presence.enabled and self.cfg.whatsapp.camera_keep_open <= 0:
                     self.camera.close()
+
+    def release_if_idle(self, now: float) -> None:
+        """Turn the webcam off once it has been idle for camera_keep_open."""
+        if self.cfg.presence.enabled or not self.camera.is_open:
+            return
+        if now - self.last_used >= self.cfg.whatsapp.camera_keep_open:
+            with self.lock:
+                self.camera.close()
 
     def close_preview(self) -> None:
         if self._kept_preview is not None:
@@ -196,6 +207,7 @@ def run(cfg: Config, show_preview: bool = True) -> int:
             woke = wake.wait(step)
             wake.clear()
             now = time.monotonic()
+            checker.release_if_idle(now)
             for i, (guard, interval, on_wake) in enumerate(guards):
                 if now >= due[i] or (woke and on_wake):
                     try:

@@ -40,6 +40,25 @@ class Camera:
             cap.read()
         return self
 
+    def flush(self, min_seconds: float = 0.3, max_grabs: int = 90, clock=time.monotonic) -> int:
+        """Drop frames buffered while nobody was reading; return how many.
+
+        A warm camera can hand back several old frames instantly, e.g. ones
+        from the previous face check, which must never count again.  Keep
+        grabbing until ``min_seconds`` have passed AND a grab had to wait
+        for a new frame, i.e. we are reading live.
+        """
+        if self._cap is None:
+            return 0
+        start = clock()
+        for n in range(1, max_grabs + 1):
+            t = clock()
+            self._cap.grab()
+            waited = clock() - t
+            if clock() - start >= min_seconds and waited >= 0.015:
+                return n
+        return max_grabs
+
     def read(self) -> np.ndarray | None:
         if self._cap is None:
             return None

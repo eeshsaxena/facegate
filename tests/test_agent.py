@@ -113,3 +113,40 @@ def test_child_gets_no_console_handles():
     import subprocess
 
     assert seen["stdin"] == seen["stdout"] == seen["stderr"] == subprocess.DEVNULL
+
+
+class FakeCamera:
+    def __init__(self):
+        self.is_open = True
+        self.closed = 0
+
+    def close(self):
+        self.is_open = False
+        self.closed += 1
+
+
+def checker(**whatsapp):
+    from facegate.config import Config
+
+    cfg = Config()
+    for k, v in whatsapp.items():
+        setattr(cfg.whatsapp, k, v)
+    c = agent.FaceChecker(cfg, engine=None, templates=None, show_preview=False)
+    c.camera = FakeCamera()
+    return c
+
+
+def test_camera_stays_warm_then_turns_off():
+    c = checker(camera_keep_open=15)
+    c.last_used = 100.0
+    c.release_if_idle(110.0)
+    assert c.camera.is_open
+    c.release_if_idle(115.5)
+    assert not c.camera.is_open and c.camera.closed == 1
+
+
+def test_camera_is_left_alone_for_the_walk_away_lock():
+    c = checker(camera_keep_open=1)
+    c.cfg.presence.enabled = True
+    c.release_if_idle(1e9)
+    assert c.camera.is_open
