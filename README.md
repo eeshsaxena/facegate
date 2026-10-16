@@ -3,9 +3,10 @@
 Face unlock for Windows laptops that have a normal webcam but no IR camera
 or fingerprint reader.
 
-- **WhatsApp lock:** WhatsApp Desktop stays locked until the webcam sees
-  your face. Once unlocked it stays open while you use it, then locks again
-  after 30 seconds in the background or as soon as you lock Windows.
+- **WhatsApp lock:** every time WhatsApp opens or comes back to the front,
+  the webcam checks your face first. While you're using it, including its
+  own dialogs like the file picker, it stays open. Switch to something else
+  and it locks and minimizes within a second. Locking Windows locks it too.
 - **Walk-away lock:** Windows locks itself when nobody has been in front of
   the camera for 30 seconds. This is optional and off by default.
 
@@ -18,6 +19,15 @@ camera is only on while it is actually checking.
 - **Instant.** A Windows event hook reports every window change, so
   WhatsApp is minimized the moment it comes to the front. There's also a
   once-a-second backup sweep. Nothing is injected into WhatsApp.
+- **Catches every way of opening it.** Tray icon, Start menu, taskbar or
+  Alt+Tab. Even when Windows shows WhatsApp without making it the active
+  window, it still gets checked.
+- **Comes back in front.** After a match, every hidden WhatsApp window is
+  restored and focused. FaceGate checks that it really reappeared and
+  retries if it didn't.
+- **Fast re-checks, no replays.** The webcam stays on for 15 s after a check
+  (`camera_keep_open`), so switching back is quick. Frames buffered from an
+  earlier check are thrown away first, so they can never count again.
 - **Every window.** Popped-out chat windows are hidden too, not just the
   main one. Dialogs follow their main window.
 - **Fails closed.** The agent starts locked and hides WhatsApp if it's
@@ -126,7 +136,9 @@ liveness_min_range = 0.10
 enabled = true
 processes = ["WhatsApp.exe", "WhatsApp.Root.exe"]
 window_titles = []        # ["WhatsApp"] also guards web.whatsapp.com
-relock_after = 30.0       # seconds in the background before it locks again
+relock_after = 1.0        # seconds out of focus before it locks again
+focus_grace = 10.0        # lock if it never gets focus after an unlock
+camera_keep_open = 15.0   # keep the webcam warm for quick re-checks (0 = off)
 max_failures = 3          # wrong faces in a row before a cooldown
 cooldown = 30.0
 
